@@ -1,0 +1,282 @@
+---
+title: "APM466A1"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+library(readr)
+data <- read_csv("Desktop/APM466_A1data.csv")
+```
+```{r}
+# clean data
+library(tidyr)
+data = subset(data, select = -c(Name, ISIN, Issue_date, ...19))
+data = data %>% pivot_longer(starts_with("2022"), names_to = "today", values_to = "price")
+```
+
+```{r}
+# add three new columms to store the values: the time to maturity , time since the last coupon payment, and the coupon payment
+data = data %>% mutate(t_m = as.numeric((as.Date(maturity_date) - as.Date(today))/365)) %>% mutate(days_last_coup = as.numeric(as.Date(today) - as.Date(last_coupon)))
+
+# add a new column to store the dirty price value, create a new variable called the period, which indicates the bootstrapping within this 5 year
+data = data %>% mutate(dirty = data$price + (data$days_last_coup/365) * (data$Coupon/100)) %>% mutate(period = rep(1:10, each = 11)) 
+```
+
+## 4
+# a)
+```{r}
+# Create a function that calculates the difference between the total discounted cash flow and the dirty price of one bond , then set the result to 0 for getting the root value
+f1 = function(x, row){
+  dirty_p = as.numeric(row["price"]) #the dirty price
+  
+  t =  as.numeric(row["days_last_coup"])/365 # time since last coupon payment
+  p = as.numeric(row["period"]) #period will later be used for bootstrapping
+  cpn_pmt = as.numeric(row["Coupon"])/2 # Coupon payments in each period
+  
+  # create a for-loop to calculate the sum of discounted coupon payment
+  cashflow = 0
+  
+  for (i in 1:p){
+    cashflow = cashflow + cpn_pmt*(1/exp(x*((i/2)-t)))
+  }
+  
+  pv = 100*(1/exp(x*as.numeric(row["t_m"]))) # discounted face value
+  
+return(dirty_p - cashflow - pv)
+}
+
+# Use uniroot() to calculated the ytm. Create a matrix to store the values of ytm in each days. 
+rt_matrix = matrix(0, nrow = 10, ncol = 11)
+
+for(i in 1:10){
+  for (j in 1:11){
+    row_num = (i - 1)*11 + j
+    row = data[row_num,]
+    f2 = function(x) f1(x, row)
+    rt <- uniroot(f2, c(0,1))$root
+    rt_matrix[i,j] = rt                                               
+  }
+}
+```
+```{r}
+# store the ytm values for each days from JAN10 to JAN24
+ytm_1 = rt_matrix[1:10, 1]
+ytm_2 = rt_matrix[1:10, 2]
+ytm_3 = rt_matrix[1:10, 3]
+ytm_4 = rt_matrix[1:10, 4]
+ytm_5 = rt_matrix[1:10, 5]
+ytm_6 = rt_matrix[1:10, 6]
+ytm_7 = rt_matrix[1:10, 7]
+ytm_8 = rt_matrix[1:10, 8]
+ytm_9 = rt_matrix[1:10, 9]
+ytm_10 = rt_matrix[1:10, 10]
+ytm_11 = rt_matrix[1:10, 11]
+
+# create a tibble for the ytm datas for graphing
+ytm = tibble(ytm_1, ytm_2, ytm_3, ytm_4, ytm_5, ytm_6, ytm_7, ytm_8, ytm_9, ytm_10, ytm_11)
+```
+
+```{r}
+# create the time variables, unit is in years
+time = factor(c(0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5))
+
+# use ggplot to graph the ytm for each days
+ytm %>% ggplot(aes(x = time)) + 
+  geom_line(aes(y = ytm_1, group = 1, color = "Jan10")) +
+  geom_line(aes(y = ytm_2, group = 1, color = "Jan11")) +
+  geom_line(aes(y = ytm_3, group = 1, color = "Jan12")) +
+  geom_line(aes(y = ytm_4, group = 1, color = "Jan13")) +
+  geom_line(aes(y = ytm_5, group = 1, color = "Jan14")) +
+  geom_line(aes(y = ytm_6, group = 1, color = "Jan17")) +
+  geom_line(aes(y = ytm_7, group = 1, color = "Jan18")) +
+  geom_line(aes(y = ytm_8, group = 1, color = "Jan19")) +
+  geom_line(aes(y = ytm_9, group = 1, color = "Jan20")) +
+  geom_line(aes(y = ytm_10, group = 1, color = "Jan21")) +
+  geom_line(aes(y = ytm_11, group = 1, color = "Jan24")) +
+  theme_minimal() +
+  labs(title = "5-year Yield Curve",
+       x = "Time to Maturity",
+       y = "Yields to Maturity")
+```
+# b) Spot Rate
+
+```{r}
+# drag the data from data frame, and restore them as new variables in our calculation
+dirty_p = data$dirty # the dirty price
+  
+t_m = data$t_m 
+p = data$period # time to maturity
+cpn_pmt =data$Coupon/2 # coupon payments in each period
+t_c = (180 -  data$days_last_coup)/365 #time to next coupon payment
+```
+```{r}
+# create a spot rate matrix, similar to the YTM matrix. The first row of the spot matrix can be calculated by the dirty price = discounted cash flows of the first bond
+spot_matrix = matrix(0, nrow = 10, ncol = 11)
+
+# Calculate the first period spot rates s1 by using bond that mature in MAY31,2022
+for (i in 1:11){
+  spot_matrix[1, i] =  uniroot(function(x) dirty[i] - cpn_pmt[i]*exp(-x*t_m[i]) - 100*exp(-x*t_m[i]), c(0,1))$root
+}
+
+# Use for-loop to simulate the calculation: use the last-period spot rates to find the next-period spot rates. Repeat the process to find the next period spot rates. 
+for (i in 2:10){
+  for (j in 1:11){
+    total_cpn = 0
+    for (k in 1:(i-1)){
+      total_cpn = total_cpn + cpn_pmt[11*(i-1)+j]*exp(-spot_matrix[k,j]*((k-1)/2 + t_c[11*(i-1) + j])) # calculate the total amount of coupon payment in each periods
+    }
+    spot_matrix[i,j] = uniroot(function(x) dirty[(i-1)*11+j] - total_cpn - cpn_pmt[(i-1)*11+j]*exp(-x*t_m[(i-1)*11+j]) - 100*exp(-x*t_m[(i-1)*11+j]), c(0,1))$root
+  }
+}
+```
+```{r}
+# store the spot rates value of each days from JAN10 to JAN24
+spot_rate_1 = spot_matrix[1:10, 1]
+spot_rate_2 = spot_matrix[1:10, 2]
+spot_rate_3 = spot_matrix[1:10, 3]
+spot_rate_4 = spot_matrix[1:10, 4]
+spot_rate_5 = spot_matrix[1:10, 5]
+spot_rate_6 = spot_matrix[1:10, 6]
+spot_rate_7 = spot_matrix[1:10, 7]
+spot_rate_8 = spot_matrix[1:10, 8]
+spot_rate_9 = spot_matrix[1:10, 9]
+spot_rate_10 = spot_matrix[1:10, 10]
+spot_rate_11 = spot_matrix[1:10, 11]
+
+spot_rate_table = tibble(spot_rate_1, spot_rate_2, spot_rate_3, spot_rate_4, spot_rate_5, spot_rate_6, spot_rate_7, spot_rate_8, spot_rate_9, spot_rate_10, spot_rate_11)
+```
+
+```{r}
+# create the time variables, unit is in years
+time = factor(c(0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5))
+
+# use ggplot to graph the spot rates for each days
+spot_rate_table %>% ggplot(aes(x = time)) + 
+  geom_line(aes(y = spot_rate_1, group = 1, color = "Jan10")) +
+  geom_line(aes(y = spot_rate_2, group = 1, color = "Jan11")) +
+  geom_line(aes(y = spot_rate_3, group = 1, color = "Jan12")) +
+  geom_line(aes(y = spot_rate_4, group = 1, color = "Jan13")) +
+  geom_line(aes(y = spot_rate_5, group = 1, color = "Jan14")) +
+  geom_line(aes(y = spot_rate_6, group = 1, color = "Jan17")) +
+  geom_line(aes(y = spot_rate_7, group = 1, color = "Jan18")) +
+  geom_line(aes(y = spot_rate_8, group = 1, color = "Jan19")) +
+  geom_line(aes(y = spot_rate_9, group = 1, color = "Jan20")) +
+  geom_line(aes(y = spot_rate_10, group = 1, color = "Jan21")) +
+  geom_line(aes(y = spot_rate_11, group = 1, color = "Jan24")) +
+  theme_minimal() +
+  labs(title = "5-year Spot Curve",
+       x = "Time to Maturity",
+       y = "Spot Rate")
+
+```
+#c)
+
+```{r}
+# Choose 5 bonds that mature in T1 = 1 year, T2 = 2 years, T3 = 3 years, T4 = 4 years and T5 = 5 years. Store the spot rate of them
+bond_rate_1 = spot_matrix[2, 1:11]
+bond_rate_2 = spot_matrix[4, 1:11]
+bond_rate_3 = spot_matrix[6, 1:11]
+bond_rate_4 = spot_matrix[8, 1:11]
+bond_rate_5 = spot_matrix[10, 1:11]
+
+bond_rate = t(tibble(bond_rate_1, bond_rate_2, bond_rate_3, bond_rate_4, bond_rate_5))
+# find their time to maturity
+t_m_1 = data$t_m[12:22]
+t_m_2 = data$t_m[34:44]
+t_m_3 = data$t_m[56:66]
+t_m_4 = data$t_m[78:88]
+t_m_5 = data$t_m[100:110]
+
+time_m = t(tibble(t_m_1, t_m_2, t_m_3, t_m_4, t_m_5))
+# Calculate the Forward Rate
+
+for (i in 1:4){
+  for (j in 1:11){
+  forward_matrix[i,j] = (as.numeric(bond_rate[i+1,j])*as.numeric(time_m[i+1,j]) - as.numeric(bond_rate[1,j])*as.numeric(time_m[1,j]))/as.numeric((time_m[i+1,j]-time_m[1,j]))
+  }
+}
+```
+```{r}
+# store the forward rates value 
+f_1_1 = forward_matrix[1,1:11] #1yr-1yr forward
+f_1_2 = forward_matrix[2,1:11] #1yr-2yr forward
+f_1_3 = forward_matrix[3,1:11] #1yr-3yr forward
+f_1_4 = forward_matrix[4,1:11] #1yr-4yr forward
+forward_rate = as.data.frame(forward_matrix)
+```
+```{r}
+# Create a time factor as 1yr to nyr, n in {1,2,3,4}
+year = factor(c(1, 2, 3,4))
+
+# Use ggplot to graph the forward rate for each days from JAN10 to JAN24
+forward_rate %>% ggplot(aes(x = year)) + 
+  geom_line(aes(y = forward_rate[,1], group = 1, color = "Jan10")) +
+  geom_line(aes(y = forward_rate[,2], group = 1, color = "Jan11")) +
+  geom_line(aes(y = forward_rate[,3], group = 1, color = "Jan12")) +
+  geom_line(aes(y = forward_rate[,4], group = 1, color = "Jan13")) +
+  geom_line(aes(y = forward_rate[,5], group = 1, color = "Jan14")) +
+  geom_line(aes(y = forward_rate[,6], group = 1, color = "Jan17")) +
+  geom_line(aes(y = forward_rate[,7], group = 1, color = "Jan18")) +
+  geom_line(aes(y = forward_rate[,8], group = 1, color = "Jan19")) +
+  geom_line(aes(y = forward_rate[,9], group = 1, color = "Jan20")) +
+  geom_line(aes(y = forward_rate[,10], group = 1, color = "Jan21")) +
+  geom_line(aes(y = forward_rate[,11], group = 1, color = "Jan24")) +
+  theme_minimal() +
+  labs(title = "Forward Curve",
+       x = "1yr to nyr",
+       y = "Forward Rate")
+```
+## 5
+```{r}
+# select 5 bonds' yield to maturity
+bond_ytm_1 = rt_matrix[2, 1:11]
+bond_ytm_2 = rt_matrix[4, 1:11]
+bond_ytm_3 = rt_matrix[6, 1:11]
+bond_ytm_4 = rt_matrix[8, 1:11]
+bond_ytm_5 = rt_matrix[10, 1:11]
+
+ytm_data = t(tibble(bond_ytm_1, bond_ytm_2, bond_ytm_3, bond_ytm_4, bond_ytm_5))
+
+log_yield = matrix(0, nrow = 5, ncol = 10)
+# Daily log-returns of yield
+for (i in 1:5){
+  for (j in 1:10){
+    log_yield[i,j] = log(ytm_data[i,j+1]/ytm_data[i,j])
+  }
+}
+
+# the covariance matrix of the daily log-returns of yield
+cov_ytm = cov(t(log_yield))
+cov_ytm
+```
+
+```{r}
+log_forward = matrix(0, nrow = 4, ncol = 10)
+# Daily log-returns of forward rate
+for (i in 1:4){
+  for (j in 1:10){
+    log_forward[i,j] = (log(forward_rate[i,j+1]/forward_rate[i,j]))
+  }
+}
+
+# the covariance matrix of future rate
+cov_forward = cov(t(log_forward))
+cov_forward
+```
+## 6
+```{r}
+# use the eigen() function to find the eigenvalues and vectors of the above two matrices
+# for the covariance matrix of ytm
+eigen_ytm = eigen(cov_ytm)
+eigenvalues_ytm = eigen_ytm$values
+eigenvectors_ytm = eigen_ytm$vectors
+
+
+# for the covariance matrix of forward rate
+eigen_forward = eigen(cov_forward)
+eigenvalues_forward = eigen_forward$values
+eigenvectors_forward = eigen_forward$vectors
+```
